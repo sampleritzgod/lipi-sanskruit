@@ -32,7 +32,8 @@ DATA = ROOT / "data"
 MODEL = "claude-opus-5"
 EFFORT = "high"
 REFERENCE_MAX_EDGE = 2000  # book photos are 4032 px; this keeps the glyphs legible
-MAX_CONCURRENT = 3  # pages in flight at once
+MAX_CONCURRENT = 10  # pages in flight at once
+PAGE_TIMEOUT = 360  # seconds; a stuck page is retried once, then reported
 MAX_EDGE = 2576  # the model's largest image edge; bigger images get downscaled
 
 # USD per million tokens for MODEL, for the cost shown in the UI.
@@ -229,10 +230,12 @@ class Reader:
             content.append({"type": "text", "text": f"{REVIEW}\n\nHand notes:\n{hand}\n\nFirst reading:\n{first}"})
 
         def failed(error: str) -> PageResult:
-            return draft or PageResult([Result("", "low", "", [], error=error) for _ in lines], [], "", error)
+            if draft is not None:  # the check failed: the first reading stands, flagged
+                return PageResult(draft.lines, draft.hand_notes, draft.clean_text, error)
+            return PageResult([Result("", "low", "", [], error=error) for _ in lines], [], "", error)
 
-        async with self.limit:
-            try:
+        async def request():
+            async with asyncio.timeout(PAGE_TIMEOUT):
                 async with self.client.beta.messages.stream(
                     model=MODEL,
                     max_tokens=64000,
@@ -243,11 +246,20 @@ class Reader:
                     system=INSTRUCTIONS,
                     messages=[{"role": "user", "content": content}],
                 ) as stream:
-                    response = await stream.get_final_message()
-            except anthropic.APIStatusError as e:
-                return failed(f"API error {e.status_code}: {e.message}")
-            except anthropic.APIConnectionError:
-                return failed("network error")
+                    return await stream.get_final_message()
+
+        async with self.limit:
+            for attempt in (1, 2):
+                try:
+                    response = await request()
+                    break
+                except TimeoutError:
+                    if attempt == 2:
+                        return failed(f"took longer than {PAGE_TIMEOUT // 60} minutes twice")
+                except anthropic.APIStatusError as e:
+                    return failed(f"API error {e.status_code}: {e.message}")
+                except anthropic.APIConnectionError:
+                    return failed("network error")
         self.usage.add(response.usage)
         if response.stop_reason != "end_turn":
             return failed(f"no reading (stop reason: {response.stop_reason})")

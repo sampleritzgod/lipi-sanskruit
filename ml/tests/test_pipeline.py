@@ -14,6 +14,7 @@ class FakeReader:
         self.reviews = []
 
     async def read_page(self, page, lines, draft=None, notes=None):
+        assert draft is not None or not self.reviews, "first pass after a check"
         if draft is not None:
             self.reviews.append(notes)
             fixed = [Result(r.text.replace("?", "३"), "high", "", []) if not r.error else r for r in draft.lines]
@@ -39,6 +40,49 @@ def test_job_reads_then_checks_every_page(tmp_path):
     assert [l["status"] for l in page["lines"]].count("error") == 1
     assert job.text() == "--- Page 1 ---\nपंक्ति१ पंक्ति३\n"
     assert job.exact_text().startswith("--- Page 1 ---\nपंक्ति1\n\nपंक्ति३")
+
+
+def test_interrupted_job_resumes_without_rereading_finished_pages(tmp_path):
+    Image.fromarray(fake_pothi(n_lines=4)).save(tmp_path / "leaf.png")
+    job = pipeline.Job.create(tmp_path / "jobs", "job3", "leaf.png", (tmp_path / "leaf.png").read_bytes())
+    asyncio.run(pipeline.run(job, FakeReader()))
+    page = job.state["pages"][0]
+    page["stage"] = "read"  # pretend the server stopped before the checking pass
+    job.state.update(status="checking", cost_usd=1.5)
+    job.save()
+
+    reader = FakeReader()
+    reader.reviews = ["resuming"]  # any first-pass call now would trip the assert
+    resumed = pipeline.Job(job.dir)
+    asyncio.run(pipeline.run(resumed, reader))
+
+    assert resumed.state["status"] == "done"
+    assert len(reader.reviews) == 2  # only the checking pass ran again
+    assert resumed.state["pages"][0]["stage"] == "checked"
+    assert resumed.state["cost_usd"] == 1.5  # earlier spend is kept
+
+
+class OutOfCreditOnCheck(FakeReader):
+    async def read_page(self, page, lines, draft=None, notes=None):
+        if draft is not None:
+            return PageResult(draft.lines, draft.hand_notes, draft.clean_text,
+                              "API error 400: Your credit balance is too low to access the Anthropic API.")
+        return await super().read_page(page, lines)
+
+
+def test_failed_check_keeps_first_reading_and_offers_retry(tmp_path):
+    Image.fromarray(fake_pothi(n_lines=4)).save(tmp_path / "leaf.png")
+    job = pipeline.Job.create(tmp_path / "jobs", "job4", "leaf.png", (tmp_path / "leaf.png").read_bytes())
+    asyncio.run(pipeline.run(job, OutOfCreditOnCheck()))
+
+    page = job.state["pages"][0]
+    assert page["stage"] == "read"  # not falsely marked as checked
+    assert page["clean_text"] == "draft"
+    assert "out of credit" in job.state["error"] and "Retry" in job.state["error"]
+
+    asyncio.run(pipeline.run(job, FakeReader()))  # retry once credit is back
+    assert job.state["pages"][0]["stage"] == "checked"
+    assert job.state["error"] == ""
 
 
 def test_unsupported_upload_fails_cleanly(tmp_path):

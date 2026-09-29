@@ -125,6 +125,7 @@
       <span><span class="x">[?]</span> unreadable</span>
     </div>
     <div class="error" id="job-error"></div>
+    <button id="retry" class="primary" hidden>Retry unfinished pages</button>
     <div id="passages" class="text-only"></div>
     <div id="pages" class="lines-only"></div>
   </section>
@@ -195,10 +196,15 @@ function render(job) {
   $("download").href = `/api/jobs/${job.id}/text`;
   $("download-exact").href = `/api/jobs/${job.id}/text?exact=true`;
   $("job-error").textContent = job.error || "";
+  $("retry").hidden = !(job.error && ["done", "failed"].includes(job.status));
   const title = (p) => p.name.replace("page-", "Page ").replace(/ 0+/, " ");
   $("passages").innerHTML = job.pages.map((p) => {
-    const badge = p.stage === "read" ? '<span class="badge">double-checking…</span>' : "";
+    const working = ["reading", "checking"].includes(job.status);
+    const badge = p.error ? '<span class="badge failed">not read</span>'
+      : p.check_error ? '<span class="badge">not double-checked</span>'
+      : p.stage === "read" && working ? '<span class="badge">double-checking…</span>' : "";
     const body = !p.lines.length ? '<p class="pending">No text lines found on this page.</p>'
+      : p.error ? '<p class="pending">This page could not be read yet. Press Retry.</p>'
       : p.clean_text ? `<p>${markup(p.clean_text)}</p>`
       : job.status === "done" ? `<p>${markup(p.lines.map((l) => l.text || "").join(" "))}</p>`
       : '<p class="pending">Reading…</p>';
@@ -241,6 +247,12 @@ const drop = $("drop");
 ["dragenter", "dragover"].forEach((t) => drop.addEventListener(t, (e) => { e.preventDefault(); drop.classList.add("over"); }));
 ["dragleave", "drop"].forEach((t) => drop.addEventListener(t, (e) => { e.preventDefault(); drop.classList.remove("over"); }));
 drop.addEventListener("drop", (e) => e.dataTransfer.files[0] && upload(e.dataTransfer.files[0]));
+$("retry").addEventListener("click", async () => {
+  const id = location.hash.match(/job=([\w-]+)/)[1];
+  $("retry").hidden = true;
+  try { await api(`/api/jobs/${id}/retry`, { method: "POST" }); } catch (err) { $("job-error").textContent = err.message; }
+  showJob(id);
+});
 $("tab-text").addEventListener("click", () => setView("text"));
 $("tab-lines").addEventListener("click", () => setView("lines"));
 $("show-img").addEventListener("change", (e) => document.body.classList.toggle("no-img", !e.target.checked));

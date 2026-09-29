@@ -20,7 +20,7 @@ import pypdfium2 as pdfium
 from PIL import Image, ImageOps
 
 from lipi.inventory import IMAGE_EXTS, PDF_EXTS, page_to_pil
-from lipi.reader import MODEL, PageResult, Reader
+from lipi.reader import MODEL, PageResult, Reader, Result
 from lipi.segment import save_page
 
 MAX_PAGES = 50
@@ -78,63 +78,105 @@ class Job:
         return "\n".join(parts)
 
 
+def short_reason(error: str) -> str:
+    if "credit balance is too low" in error:
+        return "the Anthropic account is out of credit (add credit in Plans & Billing)."
+    return error[:200]
+
+
+def stored_result(page: dict) -> PageResult:
+    lines = [Result(l.get("text", ""), l.get("confidence", "low"), l.get("note", ""),
+                    l.get("problems", []), l.get("error", "")) for l in page["lines"]]
+    return PageResult(lines, page.get("hand_notes", []), page.get("clean_text", ""), page.get("error", ""))
+
+
 async def run(job: Job, reader: Reader | None = None) -> None:
+    """Process a job. Safe to call again on an interrupted job: finished work is kept."""
     reader = reader or Reader()
     state = job.state
+    spent_before = state.get("cost_usd", 0.0)
+    state["error"] = ""
     try:
-        state["status"] = "splitting"
-        job.save()
-        images = await asyncio.to_thread(document_pages, job.dir / state["upload"])
-        for i, image in enumerate(images, 1):
-            name = f"page-{i:03d}"
-            src = job.dir / f"{name}.jpg"
-            image.save(src, quality=95, subsampling=0)
-            lines = await asyncio.to_thread(save_page, src, job.dir / name)
-            state["pages"].append({"name": name, "lines": [
-                {"line": l.index, "status": "pending", "box": asdict(l)} for l in lines]})
-        job.save()
+        if not state["pages"]:
+            await split(job)
 
         state["status"] = "reading"
         job.save()
-
-        def load(path: Path) -> Image.Image:
-            with Image.open(path) as im:
-                return im.copy()
-
-        def images_of(page: dict) -> tuple[Image.Image, list[Image.Image]]:
-            return (load(job.dir / f"{page['name']}.jpg"),
-                    [load(job.dir / page["name"] / f"line-{l['line']:02d}.jpg") for l in page["lines"]])
-
-        def store(page: dict, result: PageResult, stage: str) -> None:
-            for line, r in zip(page["lines"], result.lines):
-                line.update(status="error" if r.error else "done", text=r.text, confidence=r.confidence,
-                            note=r.note, problems=r.problems, error=r.error)
-            page.update(hand_notes=result.hand_notes, clean_text=result.clean_text, stage=stage)
-            state["cost_usd"] = round(reader.usage.usd, 4)
-            job.save()
-
-        pages = [p for p in state["pages"] if p["lines"]]
-        drafts: dict[str, PageResult] = {}
-
-        async def first(page: dict) -> None:
-            drafts[page["name"]] = result = await reader.read_page(*images_of(page))
-            store(page, result, "read")
-
-        await asyncio.gather(*(first(p) for p in pages))
-
-        state["status"] = "checking"
-        job.save()
-        notes = list(dict.fromkeys(n for d in drafts.values() for n in d.hand_notes))[:MAX_HAND_NOTES]
-
-        async def check(page: dict) -> None:
-            draft = drafts[page["name"]]
-            if draft.error:  # nothing to check; keep the error visible
-                return
-            store(page, await reader.read_page(*images_of(page), draft=draft, notes=notes), "checked")
-
-        await asyncio.gather(*(check(p) for p in pages))
+        await read_pages(job, reader, spent_before)
         state["status"] = "done"
     except Exception as e:  # noqa: BLE001 - surface any failure to the user
         state["status"], state["error"] = "failed", str(e)
     job.save()
+
+
+async def split(job: Job) -> None:
+    state = job.state
+    state["status"] = "splitting"
+    job.save()
+    images = await asyncio.to_thread(document_pages, job.dir / state["upload"])
+    for i, image in enumerate(images, 1):
+        name = f"page-{i:03d}"
+        src = job.dir / f"{name}.jpg"
+        image.save(src, quality=95, subsampling=0)
+        lines = await asyncio.to_thread(save_page, src, job.dir / name)
+        state["pages"].append({"name": name, "lines": [
+            {"line": l.index, "status": "pending", "box": asdict(l)} for l in lines]})
+    job.save()
+
+
+async def read_pages(job: Job, reader: Reader, spent_before: float) -> None:
+    """First reading of every page, then a checking pass using all pages' hand notes."""
+    state = job.state
+
+    def load(path: Path) -> Image.Image:
+        with Image.open(path) as im:
+            return im.copy()
+
+    def images_of(page: dict) -> tuple[Image.Image, list[Image.Image]]:
+        return (load(job.dir / f"{page['name']}.jpg"),
+                [load(job.dir / page["name"] / f"line-{l['line']:02d}.jpg") for l in page["lines"]])
+
+    def store(page: dict, result: PageResult, stage: str) -> None:
+        for line, r in zip(page["lines"], result.lines):
+            line.update(status="error" if r.error else "done", text=r.text, confidence=r.confidence,
+                        note=r.note, problems=r.problems, error=r.error)
+        page.update(hand_notes=result.hand_notes, clean_text=result.clean_text,
+                    error=result.error, stage=stage)
+        state["cost_usd"] = round(spent_before + reader.usage.usd, 4)
+        job.save()
+
+    pages = [p for p in state["pages"] if p["lines"]]
+    drafts = {p["name"]: stored_result(p) for p in pages if p.get("stage") and not p.get("error")}
+
+    async def first(page: dict) -> None:
+        if page["name"] in drafts:  # already read before an interruption
+            return
+        drafts[page["name"]] = result = await reader.read_page(*images_of(page))
+        store(page, result, "read")
+
+    await asyncio.gather(*(first(p) for p in pages))
+
+    state["status"] = "checking"
+    job.save()
+    notes = list(dict.fromkeys(n for d in drafts.values() for n in d.hand_notes))[:MAX_HAND_NOTES]
+
+    async def check(page: dict) -> None:
+        draft = drafts[page["name"]]
+        if draft.error or page.get("stage") == "checked":  # failed pages keep their error; done pages stay done
+            return
+        result = await reader.read_page(*images_of(page), draft=draft, notes=notes)
+        if result.error:  # keep the first reading; the check can be retried
+            page["check_error"] = result.error
+            job.save()
+            return
+        page.pop("check_error", None)
+        store(page, result, "checked")
+
+    await asyncio.gather(*(check(p) for p in pages))
+
+    failed = [p for p in pages if p.get("error") or p.get("check_error")]
+    if failed:
+        first_error = failed[0].get("error") or failed[0].get("check_error")
+        state["error"] = (f"{len(failed)} of {len(pages)} pages are not finished. "
+                          f"Press Retry to finish them. Reason: {short_reason(first_error)}")
 

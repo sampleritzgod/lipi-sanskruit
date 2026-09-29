@@ -30,14 +30,20 @@ app = FastAPI(title="Lipi")
 _running: set[asyncio.Task] = set()
 
 
+def start(job: pipeline.Job) -> None:
+    task = asyncio.create_task(pipeline.run(job))
+    _running.add(task)
+    task.add_done_callback(_running.discard)
+
+
 @app.on_event("startup")
-def mark_interrupted_jobs() -> None:
+async def resume_interrupted_jobs() -> None:
+    """Jobs cut off by a server stop continue where they left off."""
     JOBS.mkdir(parents=True, exist_ok=True)
     for path in JOBS.glob("*/job.json"):
         job = pipeline.Job(path.parent)
         if job.state["status"] in {"queued", "splitting", "reading", "checking"}:
-            job.state.update(status="failed", error="interrupted: the server stopped while reading")
-            job.save()
+            start(job)
 
 
 def load_job(job_id: str) -> pipeline.Job:
@@ -60,9 +66,7 @@ async def create_job(file: UploadFile) -> dict:
     if len(data) > MAX_UPLOAD_BYTES:
         raise HTTPException(413, "File is larger than 100 MB.")
     job = pipeline.Job.create(JOBS, uuid.uuid4().hex[:12], name, data)
-    task = asyncio.create_task(pipeline.run(job))
-    _running.add(task)
-    task.add_done_callback(_running.discard)
+    start(job)
     return {"id": job.state["id"]}
 
 
@@ -76,6 +80,17 @@ def list_jobs() -> list[dict]:
 @app.get("/api/jobs/{job_id}")
 def get_job(job_id: str) -> dict:
     return load_job(job_id).state
+
+
+@app.post("/api/jobs/{job_id}/retry")
+def retry_job(job_id: str) -> dict:
+    job = load_job(job_id)
+    if job.state["status"] not in {"done", "failed"}:
+        raise HTTPException(409, "This document is still being read.")
+    job.state["status"] = "queued"
+    job.save()
+    start(job)
+    return {"id": job_id}
 
 
 @app.get("/api/jobs/{job_id}/text", response_class=PlainTextResponse)
