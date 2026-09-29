@@ -1,0 +1,257 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Lipi Reader</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Noto+Sans+Devanagari:wght@400;500&family=Noto+Serif+Devanagari:wght@500;600&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --bg: #f7f3ec; --panel: #fffdf9; --ink: #221c15; --muted: #75695b; --rule: #e6dccd;
+    --accent: #a4441f; --accent-soft: #f6e4d9; --ok: #2f7a3e; --mid: #b27400; --low: #b3261e;
+    --unsure-bg: #fde9b8; --unread-bg: #f7c9c4; --img-bg: #efe5d4;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #17140f; --panel: #211d17; --ink: #f1e9dc; --muted: #a89b89; --rule: #3a3329;
+      --accent: #e0835a; --accent-soft: #3a2a20; --ok: #6cc07d; --mid: #e3b049; --low: #f08a80;
+      --unsure-bg: #5a4719; --unread-bg: #5c2622; --img-bg: #2d271f;
+    }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--ink);
+         font: 15px/1.5 -apple-system, "Segoe UI", system-ui, sans-serif; }
+  .wrap { max-width: 1200px; margin: 0 auto; padding: 24px 16px 64px; }
+  header { display: flex; align-items: baseline; gap: 14px; margin-bottom: 20px; flex-wrap: wrap; }
+  header h1 { margin: 0; font: 600 30px/1.1 "Noto Serif Devanagari", serif; }
+  header h1 a { color: inherit; text-decoration: none; }
+  header p { margin: 0; color: var(--muted); }
+  .drop { border: 2px dashed var(--rule); border-radius: 14px; background: var(--panel);
+          padding: 44px 20px; text-align: center; cursor: pointer; transition: .15s; }
+  .drop:hover, .drop.over { border-color: var(--accent); background: var(--accent-soft); }
+  .drop strong { display: block; font-size: 18px; margin-bottom: 6px; }
+  .drop span { color: var(--muted); }
+  .drop input { display: none; }
+  .error { color: var(--low); margin: 10px 0; }
+  h2 { font-size: 15px; color: var(--muted); font-weight: 600; margin: 28px 0 8px; text-transform: uppercase; letter-spacing: .04em; }
+  .jobs { list-style: none; padding: 0; margin: 0; background: var(--panel); border: 1px solid var(--rule); border-radius: 10px; }
+  .jobs li + li { border-top: 1px solid var(--rule); }
+  .jobs a { display: flex; justify-content: space-between; gap: 12px; padding: 10px 14px; color: inherit; text-decoration: none; }
+  .jobs a:hover { background: var(--accent-soft); }
+  .badge { font-size: 12px; padding: 1px 8px; border-radius: 99px; background: var(--rule); color: var(--muted); white-space: nowrap; }
+  .badge.done { background: color-mix(in srgb, var(--ok) 18%, transparent); color: var(--ok); }
+  .badge.failed { background: color-mix(in srgb, var(--low) 18%, transparent); color: var(--low); }
+  .bar-row { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; position: sticky; top: 0; z-index: 2;
+             background: var(--bg); padding: 10px 0; border-bottom: 1px solid var(--rule); }
+  .bar-row h2 { margin: 0; text-transform: none; letter-spacing: 0; color: var(--ink); font-size: 17px; flex: 1 1 200px; overflow-wrap: anywhere; }
+  .progress { flex: 1 1 100%; height: 6px; background: var(--rule); border-radius: 99px; overflow: hidden; }
+  .progress div { height: 100%; background: var(--accent); width: 0; transition: width .4s; }
+  button, .btn { font: inherit; padding: 6px 14px; border-radius: 8px; border: 1px solid var(--rule);
+                 background: var(--panel); color: var(--ink); cursor: pointer; text-decoration: none; }
+  button:hover, .btn:hover { border-color: var(--accent); }
+  .primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+  .meta { color: var(--muted); font-size: 13px; }
+  .legend { display: flex; gap: 14px; flex-wrap: wrap; font-size: 13px; color: var(--muted); margin: 12px 0 4px; }
+  .page h3 { margin: 26px 0 10px; font-size: 14px; color: var(--muted); }
+  .line { display: grid; grid-template-columns: 34px 1fr; gap: 4px 10px; padding: 10px 12px; margin-bottom: 8px;
+          background: var(--panel); border: 1px solid var(--rule); border-left: 4px solid var(--rule); border-radius: 8px; }
+  .line.high { border-left-color: var(--ok); }
+  .line.medium { border-left-color: var(--mid); }
+  .line.low, .line.error { border-left-color: var(--low); }
+  .num { color: var(--muted); font-size: 13px; padding-top: 4px; text-align: right; }
+  .img { background: var(--img-bg); border-radius: 4px; overflow: hidden; }
+  .img img { display: block; width: 100%; height: auto; }
+  body.no-img .img { display: none; }
+  .text { grid-column: 2; font: 500 23px/1.6 "Noto Sans Devanagari", sans-serif; overflow-wrap: anywhere; }
+  .text.pending { color: var(--muted); font: 14px/1.6 inherit; font-style: italic; }
+  .u { background: var(--unsure-bg); border-radius: 3px; padding: 0 1px; }
+  .x { background: var(--unread-bg); border-radius: 3px; padding: 0 2px; }
+  .note { grid-column: 2; color: var(--muted); font-size: 13px; }
+  .note.warn { color: var(--low); }
+  .hand { margin: -4px 0 10px; font-size: 13px; color: var(--muted); }
+  .hand summary { cursor: pointer; }
+  .hand ul { margin: 6px 0 0; padding-left: 20px; font-family: "Noto Sans Devanagari", sans-serif; }
+  .tabs { display: flex; gap: 4px; margin: 14px 0 4px; }
+  .tabs button { border-radius: 99px; }
+  .tabs button.on { background: var(--ink); color: var(--bg); border-color: var(--ink); }
+  body.view-text .lines-only, body.view-lines .text-only { display: none; }
+  .passage { background: var(--panel); border: 1px solid var(--rule); border-radius: 12px; padding: 22px 26px; margin-bottom: 14px; }
+  .passage h3 { margin: 0 0 10px; display: flex; gap: 10px; align-items: center; }
+  .passage p { margin: 0; font: 500 23px/2 "Noto Serif Devanagari", serif; overflow-wrap: anywhere; }
+  .passage p.pending { font: italic 15px/1.6 -apple-system, sans-serif; color: var(--muted); }
+  .swatch { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 4px; vertical-align: -1px; }
+  @media (max-width: 600px) { .line { grid-template-columns: 1fr; } .num { text-align: left; } .text, .note { grid-column: 1; } }
+</style>
+</head>
+<body class="view-text">
+<div class="wrap">
+  <header>
+    <h1><a href="#">लिपि</a></h1>
+    <p>Upload a manuscript PDF or photo and get every line in clear Devanagari.</p>
+  </header>
+
+  <section id="home">
+    <label class="drop" id="drop">
+      <input type="file" id="file" accept=".pdf,.jpg,.jpeg,.png,.heic,.heif,.tif,.tiff,.webp">
+      <strong>Drop a PDF or photo here</strong>
+      <span>or click to choose a file · up to 50 pages · 100 MB</span>
+    </label>
+    <div class="error" id="upload-error"></div>
+    <h2>Recent</h2>
+    <ul class="jobs" id="jobs"><li><a>No documents yet.</a></li></ul>
+  </section>
+
+  <section id="job" hidden>
+    <div class="bar-row">
+      <h2 id="job-title"></h2>
+      <span class="badge" id="job-status"></span>
+      <span class="meta" id="job-meta"></span>
+      <button id="copy">Copy text</button>
+      <a class="btn primary" id="download">Download .txt</a>
+      <a class="meta" id="download-exact">line-by-line .txt</a>
+      <div class="progress"><div id="progress"></div></div>
+    </div>
+    <div class="tabs">
+      <button id="tab-text" class="on">Text</button>
+      <button id="tab-lines">Line by line</button>
+      <label class="meta lines-only" style="margin-left:8px"><input type="checkbox" id="show-img" checked> Show images</label>
+    </div>
+    <div class="legend lines-only">
+      <span><i class="swatch" style="background:var(--ok)"></i>confident</span>
+      <span><i class="swatch" style="background:var(--mid)"></i>some doubt</span>
+      <span><i class="swatch" style="background:var(--low)"></i>check this line</span>
+      <span><span class="u">[क]</span> unsure letter</span>
+      <span><span class="x">[?]</span> unreadable</span>
+    </div>
+    <div class="error" id="job-error"></div>
+    <div id="passages" class="text-only"></div>
+    <div id="pages" class="lines-only"></div>
+  </section>
+</div>
+<script>
+const $ = (id) => document.getElementById(id);
+let pollTimer = null;
+
+async function api(path, opts) {
+  const res = await fetch(path, opts);
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.detail || res.statusText);
+  return data;
+}
+
+const esc = (s) => s.replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+function markup(text) {
+  return esc(text).replace(/\[(\?|\.\.\.)\]/g, '<span class="x">[$1]</span>')
+                  .replace(/\[([^\[\]?.]+)\]/g, '<span class="u">$1</span>');
+}
+
+async function showHome() {
+  clearTimeout(pollTimer);
+  $("home").hidden = false; $("job").hidden = true;
+  const jobs = await api("/api/jobs");
+  $("jobs").innerHTML = jobs.length ? jobs.map((j) => `
+    <li><a href="#job=${j.id}"><span>${esc(j.filename)}</span>
+      <span class="meta">${new Date(j.created).toLocaleString()} · $${j.cost_usd.toFixed(2)}
+      <span class="badge ${j.status}">${j.status}</span></span></a></li>`).join("")
+    : "<li><a>No documents yet.</a></li>";
+}
+
+async function upload(file) {
+  $("upload-error").textContent = "";
+  $("drop").querySelector("strong").textContent = `Uploading ${file.name}…`;
+  const form = new FormData(); form.append("file", file);
+  try {
+    const { id } = await api("/api/jobs", { method: "POST", body: form });
+    location.hash = `job=${id}`;
+  } catch (err) {
+    $("upload-error").textContent = err.message;
+  } finally {
+    $("drop").querySelector("strong").textContent = "Drop a PDF or photo here";
+  }
+}
+
+async function showJob(id) {
+  $("home").hidden = true; $("job").hidden = false;
+  clearTimeout(pollTimer);
+  let job;
+  try { job = await api(`/api/jobs/${id}`); } catch (err) { $("job-error").textContent = err.message; return; }
+  render(job);
+  if (["queued", "splitting", "reading", "checking"].includes(job.status)) pollTimer = setTimeout(() => showJob(id), 2500);
+}
+
+const STATUS = { queued: "starting", splitting: "finding lines", reading: "reading pages",
+                 checking: "double-checking", done: "done", failed: "failed" };
+
+function render(job) {
+  const pages = job.pages.filter((p) => p.lines.length);
+  const steps = pages.reduce((n, p) => n + ({ read: 1, checked: 2 }[p.stage] || 0), 0);
+  const progress = job.status === "done" ? 100 : pages.length ? (100 * steps) / (2 * pages.length) : 3;
+  $("job-title").textContent = job.filename;
+  $("job-status").textContent = STATUS[job.status] || job.status;
+  $("job-status").className = "badge " + job.status;
+  $("job-meta").textContent = `${job.pages.length} page${job.pages.length === 1 ? "" : "s"} · $${job.cost_usd.toFixed(2)}`;
+  $("progress").style.width = `${Math.max(progress, 3)}%`;
+  $("download").href = `/api/jobs/${job.id}/text`;
+  $("download-exact").href = `/api/jobs/${job.id}/text?exact=true`;
+  $("job-error").textContent = job.error || "";
+  const title = (p) => p.name.replace("page-", "Page ").replace(/ 0+/, " ");
+  $("passages").innerHTML = job.pages.map((p) => {
+    const badge = p.stage === "read" ? '<span class="badge">double-checking…</span>' : "";
+    const body = !p.lines.length ? '<p class="pending">No text lines found on this page.</p>'
+      : p.clean_text ? `<p>${markup(p.clean_text)}</p>`
+      : job.status === "done" ? `<p>${markup(p.lines.map((l) => l.text || "").join(" "))}</p>`
+      : '<p class="pending">Reading…</p>';
+    return `<div class="passage"><h3 class="meta">${title(p)} ${badge}</h3>${body}</div>`;
+  }).join("");
+  $("pages").innerHTML = job.pages.map((p) => `
+    <div class="page"><h3>${title(p)}</h3>
+    ${p.hand_notes?.length ? `<details class="hand"><summary>Scribe's handwriting, as read on this page</summary><ul>${p.hand_notes.map((n) => `<li>${esc(n)}</li>`).join("")}</ul></details>` : ""}
+    ${p.lines.map((l) => lineHtml(job.id, p.name, l)).join("")}</div>`).join("");
+}
+
+function setView(view) {
+  document.body.classList.toggle("view-text", view === "text");
+  document.body.classList.toggle("view-lines", view === "lines");
+  $("tab-text").classList.toggle("on", view === "text");
+  $("tab-lines").classList.toggle("on", view === "lines");
+}
+
+function lineHtml(jobId, page, l) {
+  const n = String(l.line).padStart(2, "0");
+  const cls = l.status === "error" ? "error" : l.confidence || "";
+  let body;
+  if (l.status === "pending") body = `<div class="text pending">reading…</div>`;
+  else if (l.status === "error") body = `<div class="note warn">Could not read: ${esc(l.error)}</div>`;
+  else body = `<div class="text">${markup(l.text)}</div>` +
+    (l.note ? `<div class="note">${esc(l.note)}</div>` : "") +
+    (l.problems?.length ? `<div class="note warn">⚠ ${l.problems.map(esc).join("; ")}</div>` : "");
+  return `<div class="line ${cls}"><div class="num">${l.line}</div>
+    <div class="img"><img loading="lazy" src="/api/jobs/${jobId}/img/${page}/line-${n}.jpg" alt="line ${l.line}"></div>
+    ${body}</div>`;
+}
+
+function route() {
+  const m = location.hash.match(/job=([\w-]+)/);
+  m ? showJob(m[1]) : showHome();
+}
+
+$("file").addEventListener("change", (e) => e.target.files[0] && upload(e.target.files[0]));
+const drop = $("drop");
+["dragenter", "dragover"].forEach((t) => drop.addEventListener(t, (e) => { e.preventDefault(); drop.classList.add("over"); }));
+["dragleave", "drop"].forEach((t) => drop.addEventListener(t, (e) => { e.preventDefault(); drop.classList.remove("over"); }));
+drop.addEventListener("drop", (e) => e.dataTransfer.files[0] && upload(e.dataTransfer.files[0]));
+$("tab-text").addEventListener("click", () => setView("text"));
+$("tab-lines").addEventListener("click", () => setView("lines"));
+$("show-img").addEventListener("change", (e) => document.body.classList.toggle("no-img", !e.target.checked));
+$("copy").addEventListener("click", async () => {
+  const id = location.hash.match(/job=([\w-]+)/)[1];
+  const text = await (await fetch(`/api/jobs/${id}/text`)).text();
+  await navigator.clipboard.writeText(text);
+  $("copy").textContent = "Copied ✓"; setTimeout(() => ($("copy").textContent = "Copy text"), 1500);
+});
+window.addEventListener("hashchange", route);
+route();
+</script>
+</body>
+</html>

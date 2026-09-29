@@ -1,0 +1,195 @@
+<!doctype html>
+<html lang="hi">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Lipi Transcribe</title>
+<style>
+  :root {
+    --bg: #f6f3ee; --panel: #fff; --ink: #1f1b16; --muted: #6d655b; --line: #e2dbd0;
+    --accent: #9a3b1b; --ok: #2f7a3e; --warn: #b26a00; --active: #fff7e8;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--ink);
+         font: 15px/1.4 -apple-system, "Segoe UI", sans-serif; }
+  header { position: sticky; top: 0; z-index: 2; background: var(--panel);
+           border-bottom: 1px solid var(--line); padding: 10px 16px;
+           display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
+  header h1 { font-size: 16px; margin: 0 8px 0 0; }
+  select, button, input[type=range] { font: inherit; }
+  select, button { padding: 5px 10px; border: 1px solid var(--line); border-radius: 6px; background: #fff; }
+  button { cursor: pointer; }
+  button:hover { border-color: var(--accent); }
+  .muted { color: var(--muted); font-size: 13px; }
+  .palette { display: flex; gap: 4px; flex-wrap: wrap; }
+  .palette button { min-width: 34px; font-size: 17px; padding: 2px 8px; }
+  main { max-width: 1400px; margin: 0 auto; padding: 16px; }
+  .line { background: var(--panel); border: 1px solid var(--line); border-radius: 8px;
+          padding: 10px; margin-bottom: 12px; }
+  .line.active { background: var(--active); border-color: var(--accent); }
+  .line-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px; }
+  .num { font-weight: 600; }
+  .img-wrap { overflow-x: auto; background: #eee7da; border-radius: 4px; }
+  .img-wrap img { display: block; height: var(--img-h, 90px); width: auto; }
+  body.fit .img-wrap img { width: 100%; height: auto; }
+  textarea { width: 100%; margin-top: 8px; resize: vertical; min-height: 2.6em;
+             font: 24px/1.5 "Noto Sans Devanagari", "Kohinoor Devanagari", "Devanagari Sangam MN", sans-serif;
+             padding: 6px 10px; border: 1px solid var(--line); border-radius: 6px; }
+  textarea:focus { outline: 2px solid var(--accent); border-color: transparent; }
+  .status { font-size: 13px; }
+  .status.ok { color: var(--ok); } .status.warn { color: var(--warn); } .status.skip { color: var(--muted); }
+  .problems { color: var(--warn); font-size: 13px; margin-top: 4px; }
+  .help { font-size: 13px; color: var(--muted); margin: 0 0 12px; }
+  kbd { border: 1px solid var(--line); border-bottom-width: 2px; border-radius: 4px; padding: 0 4px; background: #fff; }
+</style>
+</head>
+<body class="fit">
+<header>
+  <h1>Lipi Transcribe</h1>
+  <select id="page"></select>
+  <button id="prev">◀ Page</button><button id="next">Page ▶</button>
+  <a id="overlay" target="_blank" class="muted">view full page</a>
+  <label class="muted"><input id="fit" type="checkbox" checked> Fit width</label>
+  <label class="muted">Zoom <input id="zoom" type="range" min="60" max="220" value="90"></label>
+  <div class="palette" id="palette"></div>
+  <span class="muted" id="who"></span>
+</header>
+<main>
+  <p class="help">Type exactly what is written (see CONVENTIONS.md). <kbd>Enter</kbd> saves and moves to the next line ·
+    <kbd>Alt</kbd>+<kbd>S</kbd> skip an unreadable line · <kbd>Alt</kbd>+<kbd>↑</kbd>/<kbd>↓</kbd> move between lines.
+    Use a Devanagari keyboard (macOS: Devanagari – QWERTY or InScript).</p>
+  <div id="lines"></div>
+</main>
+<script>
+const PALETTE = ["ऽ", "।", "॥", "ँ", "ं", "ः", "्", "ॐ", "[?]", "[...]"];
+const $ = (id) => document.getElementById(id);
+let pages = [], current = null, lastFocused = null;
+
+async function api(path, body) {
+  const res = await fetch(path, body ? { method: "POST", body: JSON.stringify(body) } : {});
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.error || res.statusText);
+  return data;
+}
+
+function pageLabel(p) { return `${p.file_id} · ${p.page} (${p.done}/${p.lines})`; }
+
+async function loadPages(selectKey) {
+  const data = await api("/api/pages");
+  pages = data.pages;
+  $("who").textContent = "transcriber: " + data.transcriber;
+  $("page").innerHTML = pages.map((p, i) => `<option value="${i}">${pageLabel(p)}</option>`).join("");
+  let idx = pages.findIndex((p) => `${p.file_id}/${p.page}` === selectKey);
+  if (idx < 0) idx = Math.max(pages.findIndex((p) => p.done < p.lines), 0);
+  $("page").value = idx;
+  await showPage(idx);
+}
+
+async function showPage(idx) {
+  current = pages[idx];
+  if (!current) { $("lines").innerHTML = "<p>No line images yet. Run <code>uv run lipi-segment</code>.</p>"; return; }
+  history.replaceState(null, "", `#${current.file_id}/${current.page}`);
+  $("overlay").href = `/img/${current.file_id}/${current.page}/overlay.jpg`;
+  const { lines } = await api(`/api/page/${current.file_id}/${current.page}`);
+  $("lines").innerHTML = "";
+  for (const l of lines) $("lines").append(renderLine(l));
+  const first = [...document.querySelectorAll("textarea")].find((t) => !t.dataset.status) || document.querySelector("textarea");
+  if (first) first.focus();
+}
+
+function renderLine(l) {
+  const n = String(l.line).padStart(2, "0");
+  const box = document.createElement("div");
+  box.className = "line";
+  box.innerHTML = `
+    <div class="line-head"><span class="num">Line ${l.line}</span><span class="status"></span></div>
+    <div class="img-wrap"><img loading="lazy" src="/img/${current.file_id}/${current.page}/line-${n}.jpg" alt="line ${l.line}"></div>
+    <textarea rows="1" spellcheck="false" lang="sa"></textarea>
+    <div class="problems"></div>`;
+  const ta = box.querySelector("textarea");
+  ta.value = l.text || "";
+  ta.dataset.line = l.line;
+  ta.dataset.saved = ta.value;
+  setStatus(box, l.status, l.problems || []);
+  ta.addEventListener("focus", () => {
+    document.querySelectorAll(".line.active").forEach((e) => e.classList.remove("active"));
+    box.classList.add("active"); lastFocused = ta;
+    box.scrollIntoView({ block: "center", behavior: "smooth" });
+  });
+  ta.addEventListener("keydown", (e) => onKey(e, ta));
+  ta.addEventListener("blur", () => { if (ta.value !== ta.dataset.saved) save(ta, "done"); });
+  return box;
+}
+
+function setStatus(box, status, problems) {
+  const ta = box.querySelector("textarea");
+  const el = box.querySelector(".status");
+  ta.dataset.status = status || "";
+  el.className = "status";
+  if (status === "skip") { el.textContent = "skipped (unreadable)"; el.classList.add("skip"); }
+  else if (status === "done" && problems.length) { el.textContent = "saved, needs a look"; el.classList.add("warn"); }
+  else if (status === "done") { el.textContent = "saved ✓"; el.classList.add("ok"); }
+  else el.textContent = "";
+  box.querySelector(".problems").innerHTML = problems.map((p) => `⚠ ${p}`).join("<br>");
+}
+
+async function save(ta, status) {
+  const box = ta.closest(".line");
+  try {
+    const rec = await api("/api/save", { file_id: current.file_id, page: current.page,
+                                         line: Number(ta.dataset.line), text: ta.value, status });
+    ta.value = rec.text; ta.dataset.saved = rec.text;
+    setStatus(box, rec.status, rec.problems);
+    refreshCount();
+  } catch (err) {
+    box.querySelector(".status").textContent = "NOT SAVED: " + err.message;
+    box.querySelector(".status").className = "status warn";
+  }
+}
+
+function refreshCount() {
+  current.done = document.querySelectorAll('textarea[data-status="done"], textarea[data-status="skip"]').length;
+  $("page").options[$("page").value].textContent = pageLabel(current);
+}
+
+function move(ta, delta) {
+  const all = [...document.querySelectorAll("textarea")];
+  const next = all[all.indexOf(ta) + delta];
+  if (next) next.focus();
+  else if (delta > 0) $("next").focus();
+}
+
+async function onKey(e, ta) {
+  if (e.key === "Enter" && !e.shiftKey && !e.isComposing) {
+    e.preventDefault();
+    if (!ta.value.trim()) return;
+    await save(ta, "done"); move(ta, 1);
+  } else if (e.altKey && e.code === "KeyS") {
+    e.preventDefault(); ta.value = ""; await save(ta, "skip"); move(ta, 1);
+  } else if (e.altKey && e.key === "ArrowDown") { e.preventDefault(); move(ta, 1); }
+  else if (e.altKey && e.key === "ArrowUp") { e.preventDefault(); move(ta, -1); }
+}
+
+function insert(text) {
+  const ta = lastFocused; if (!ta) return;
+  const { selectionStart: s, selectionEnd: end } = ta;
+  ta.setRangeText(text, s, end, "end"); ta.focus();
+}
+
+$("palette").innerHTML = PALETTE.map((c) => `<button type="button" title="insert ${c}">${c}</button>`).join("");
+$("palette").addEventListener("mousedown", (e) => { if (e.target.tagName === "BUTTON") { e.preventDefault(); insert(e.target.textContent); } });
+$("page").addEventListener("change", () => showPage(Number($("page").value)));
+$("prev").addEventListener("click", () => { const i = Number($("page").value) - 1; if (i >= 0) { $("page").value = i; showPage(i); } });
+$("next").addEventListener("click", () => { const i = Number($("page").value) + 1; if (i < pages.length) { $("page").value = i; showPage(i); } });
+$("fit").addEventListener("change", (e) => document.body.classList.toggle("fit", e.target.checked));
+$("zoom").addEventListener("input", (e) => {
+  document.documentElement.style.setProperty("--img-h", e.target.value + "px");
+  $("fit").checked = false; document.body.classList.remove("fit");
+});
+window.addEventListener("beforeunload", (e) => {
+  if ([...document.querySelectorAll("textarea")].some((t) => t.value !== t.dataset.saved)) e.preventDefault();
+});
+loadPages(location.hash.slice(1));
+</script>
+</body>
+</html>

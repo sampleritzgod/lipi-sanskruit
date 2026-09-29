@@ -1,0 +1,17 @@
+# Manuscripts and reference books are large and often copyrighted: never commit them.
+data/raw/
+data/processed/
+data/lines/
+data/jobs/
+# The inventory and the gold set are small and are the project's real work product.
+!data/inventory.csv
+
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+node_modules/
+.env
+.env.*
+.DS_Store
+!.env.example
